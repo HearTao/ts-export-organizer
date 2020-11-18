@@ -20,7 +20,7 @@ export function visit(
 ) {
     const compilerOptions = program.getCompilerOptions();
     const checker = program.getTypeChecker();
-    const declarationExportsMap = new Map<ExportDeclaration, Symbol[]>()
+    const declarationExportsMap = new Map<ExportDeclaration, Symbol[]>();
 
     sourceFile.statements.forEach(stmt => {
         if (isExportDeclaration(stmt)) {
@@ -29,27 +29,25 @@ export function visit(
     });
 
     for (const [decl, exports] of declarationExportsMap.entries()) {
-        const newExportDeclaration = generateExportDeclaration(decl, exports)
-        changeTracker.replaceNode(
-            sourceFile,
-            decl,
-            newExportDeclaration
-        )
+        const newExportDeclaration = generateExportDeclaration(decl, exports);
+        changeTracker.replaceNode(sourceFile, decl, newExportDeclaration);
     }
-    
-    function generateExportDeclaration(exportDeclaration: ExportDeclaration, symbols: Symbol[]) {
+
+    function generateExportDeclaration(
+        exportDeclaration: ExportDeclaration,
+        symbols: Symbol[]
+    ) {
         return factory.createExportDeclaration(
             undefined,
             undefined,
             exportDeclaration.isTypeOnly,
             factory.createNamedExports(
-                symbols.map(symbol => factory.createExportSpecifier(
-                    undefined,
-                    symbol.name
-                ))
+                symbols.map(symbol =>
+                    factory.createExportSpecifier(undefined, symbol.name)
+                )
             ),
             exportDeclaration.moduleSpecifier
-        )
+        );
     }
 
     function visitExportDeclaration(declaration: ExportDeclaration) {
@@ -77,13 +75,13 @@ export function visit(
         const targetFile = program.getSourceFile(resolvedFileName);
         if (!targetFile) {
             // ignore if cannot find file
-            return
+            return;
         }
 
         const sourceFileSymbol = checker.getSymbolAtLocation(targetFile);
         if (!sourceFileSymbol) {
             // ignore if cannot find symbol
-            return
+            return;
         }
 
         const moduleExports = checker.getExportsOfModule(sourceFileSymbol);
