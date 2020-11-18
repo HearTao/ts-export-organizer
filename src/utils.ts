@@ -57,3 +57,7 @@ export function map<T, U>(v: T[] | null | undefined, cb: (v: T) => U): U[] {
     }
     return v.map(cb);
 }
+
+export function returnTrue() {
+    return true;
+}

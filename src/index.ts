@@ -12,51 +12,57 @@ import {
     parseJsonSourceFileConfigFileContent,
     Program,
     readJsonConfigFile,
+    SourceFile,
     textChanges
 } from 'typescript';
 import { MixinHost, mixinHost, ParseConfigHostImpl } from './hosts';
-import { assertDef } from './utils';
+import { assertDef, returnTrue } from './utils';
 import { visit } from './visitor';
 
 function fixWorker(
     host: MixinHost,
     createProgramCallback: (oldProgram?: Program) => Program,
-    formatCodeSettings: FormatCodeSettings
+    formatCodeSettings: FormatCodeSettings,
+    sourceFileFilter: (sourceFile: SourceFile) => void = returnTrue
 ) {
     const formatContext = formatting.getFormatContext(formatCodeSettings);
 
     const program = createProgramCallback();
-    program.getSourceFiles().forEach(sourceFile => {
-        let text = sourceFile.getFullText();
-        const changes = textChanges.ChangeTracker.with(
-            {
-                formatContext,
-                host,
-                preferences: {}
-            },
-            changeTracker => {
-                visit(sourceFile, program, host, changeTracker);
-            }
-        );
+    program
+        .getSourceFiles()
+        .filter(sourceFileFilter)
+        .forEach(sourceFile => {
+            let text = sourceFile.getFullText();
+            const changes = textChanges.ChangeTracker.with(
+                {
+                    formatContext,
+                    host,
+                    preferences: {}
+                },
+                changeTracker => {
+                    visit(sourceFile, program, host, changeTracker);
+                }
+            );
 
-        changes.forEach(change => {
-            text = textChanges.applyChanges(text, change.textChanges);
+            changes.forEach(change => {
+                text = textChanges.applyChanges(text, change.textChanges);
+            });
+
+            host.writeFile(sourceFile.path, text);
         });
-
-        host.writeFile(sourceFile.path, text);
-    });
 }
 
 export function fixFromProject(
     projectPath: string,
     createHighLevelUpgradeHost?: (options: CompilerOptions) => CompilerHost,
-    compilerOptions = getDefaultCompilerOptions(),
-    formatCodeSettings = getDefaultFormatCodeSettings()
+    formatCodeSettings = getDefaultFormatCodeSettings(),
+    sourceFileFilter?: (sourceFile: SourceFile) => void
 ) {
+    const defaultCompilerOptions = getDefaultCompilerOptions();
     const createCompilerHostImpl =
         createHighLevelUpgradeHost ??
         /* istanbul ignore next */ createCompilerHost;
-    const upgradeHost = createCompilerHostImpl(compilerOptions);
+    const upgradeHost = createCompilerHostImpl(defaultCompilerOptions);
 
     const filename = assertDef(
         findConfigFile(projectPath, file => upgradeHost.fileExists(file))
@@ -67,7 +73,9 @@ export function fixFromProject(
 
     const configParseHost = new ParseConfigHostImpl(
         upgradeHost ||
-            /* istanbul ignore next */ createCompilerHost(compilerOptions)
+            /* istanbul ignore next */ createCompilerHost(
+                defaultCompilerOptions
+            )
     );
     const configParsedResult = parseJsonSourceFileConfigFileContent(
         config,
@@ -95,5 +103,5 @@ export function fixFromProject(
             oldProgram
         );
     };
-    fixWorker(lsHost, onCreateProgram, formatCodeSettings);
+    fixWorker(lsHost, onCreateProgram, formatCodeSettings, sourceFileFilter);
 }
