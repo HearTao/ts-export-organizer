@@ -14,7 +14,6 @@ import {
     readJsonConfigFile,
     textChanges
 } from 'typescript';
-import { ProxyChangesTracker } from './changes';
 import { MixinHost, mixinHost, ParseConfigHostImpl } from './hosts';
 import { assertDef } from './utils';
 import { visit } from './visitor';
@@ -26,37 +25,26 @@ function fixWorker(
 ) {
     const formatContext = formatting.getFormatContext(formatCodeSettings);
 
-    let lastProgram: Program | undefined = undefined;
-    let needAnotherPass = true;
-    while (needAnotherPass) {
-        needAnotherPass = false;
-        const program = (lastProgram = createProgramCallback(lastProgram));
+    const program = createProgramCallback();
+    program.getSourceFiles().forEach(sourceFile => {
+        let text = sourceFile.getFullText();
+        const changes = textChanges.ChangeTracker.with(
+            {
+                formatContext,
+                host,
+                preferences: {}
+            },
+            changeTracker => {
+                visit(sourceFile, program, host, changeTracker);
+            }
+        );
 
-        program.getSourceFiles().forEach(sourceFile => {
-            let text = sourceFile.getFullText();
-            const changes = textChanges.ChangeTracker.with(
-                {
-                    formatContext,
-                    host,
-                    preferences: {}
-                },
-                changeTracker => {
-                    const proxyChangeTracker = new ProxyChangesTracker(
-                        changeTracker
-                    );
-                    visit(sourceFile, program, host, proxyChangeTracker);
-                    needAnotherPass =
-                        needAnotherPass || proxyChangeTracker.needAnotherPass();
-                }
-            );
-
-            changes.forEach(change => {
-                text = textChanges.applyChanges(text, change.textChanges);
-            });
-
-            host.writeFile(sourceFile.path, text);
+        changes.forEach(change => {
+            text = textChanges.applyChanges(text, change.textChanges);
         });
-    }
+
+        host.writeFile(sourceFile.path, text);
+    });
 }
 
 export function fixFromProject(

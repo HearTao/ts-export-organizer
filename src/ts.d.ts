@@ -124,6 +124,11 @@ declare module 'typescript' {
                 before: Node,
                 newNode: Node
             ): void;
+            public insertNodeAfter(
+                sourceFile: SourceFile,
+                after: Node,
+                newNode: Node
+            ): void;
         }
     }
 
@@ -203,6 +208,16 @@ declare module 'typescript' {
         export function isContextWithStartAndEndNode(
             node: ContextNode
         ): node is ContextWithStartAndEndNode;
+
+        export namespace Core {
+            export function eachSymbolReferenceInFile<T>(
+                definition: Identifier,
+                checker: TypeChecker,
+                sourceFile: SourceFile,
+                cb: (token: Identifier) => T,
+                searchContainer?: Node
+            ): T | undefined;
+        }
     }
 
     export function getDefaultFormatCodeSettings(
@@ -222,6 +237,12 @@ declare module 'typescript' {
 
     interface TypeChecker {
         isTypeAssignableTo(a: Type, b: Type): boolean;
+        resolveName(
+            name: string,
+            location: Node | undefined,
+            meaning: SymbolFlags,
+            excludeGlobals: boolean
+        ): Symbol | undefined;
     }
 
     interface SourceFile {
@@ -234,8 +255,40 @@ declare module 'typescript' {
         readonly range: TextRange;
     }
 
-    export function isKeyword(token: SyntaxKind): boolean;
+    enum SymbolFlags {
+        All = FunctionScopedVariable |
+            BlockScopedVariable |
+            Property |
+            EnumMember |
+            Function |
+            Class |
+            Interface |
+            ConstEnum |
+            RegularEnum |
+            ValueModule |
+            NamespaceModule |
+            TypeLiteral |
+            ObjectLiteral |
+            Method |
+            Constructor |
+            GetAccessor |
+            SetAccessor |
+            Signature |
+            TypeParameter |
+            TypeAlias |
+            ExportValue |
+            Alias |
+            Prototype |
+            ExportStar |
+            Optional |
+            Transient
+    }
 
+    export function isKeyword(token: SyntaxKind): boolean;
+    export function getUniqueName(
+        baseName: string,
+        sourceFile: SourceFile
+    ): string;
     export function nodeIsMissing(node: Node | undefined): boolean;
 
     export function startEndOverlapsWithStartEnd(

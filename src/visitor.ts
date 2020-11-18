@@ -1,9 +1,18 @@
 import {
     ExportDeclaration,
     factory,
+    FindAllReferences,
+    getUniqueName,
+    Identifier,
+    ImportDeclaration,
+    ImportSpecifier,
     isExportDeclaration,
+    isImportDeclaration,
+    isNamespaceImport,
+    isPropertyAccessExpression,
     isStringLiteral,
     Program,
+    PropertyAccessExpression,
     resolveModuleName,
     SourceFile,
     Symbol,
@@ -27,10 +36,14 @@ export function visit(
     const compilerOptions = program.getCompilerOptions();
     const checker = program.getTypeChecker();
     const declarationExportsMap = new Map<ExportDeclaration, Symbol[]>();
+    const nodesToReplace: PropertyAccessExpression[] = [];
+    const conflictingNames = new Map<string, true>();
 
     sourceFile.statements.forEach(stmt => {
         if (isExportDeclaration(stmt)) {
             visitExportDeclaration(stmt);
+        } else if (isImportDeclaration(stmt)) {
+            visitImportDeclaration(stmt);
         }
     });
 
@@ -134,5 +147,119 @@ export function visit(
 
         const moduleExports = checker.getExportsOfModule(sourceFileSymbol);
         declarationExportsMap.set(declaration, moduleExports);
+    }
+
+    function visitImportDeclaration(declaration: ImportDeclaration) {
+        if (
+            !declaration.importClause ||
+            !declaration.importClause.namedBindings ||
+            !isNamespaceImport(declaration.importClause.namedBindings)
+        ) {
+            // ignore if import is not import * as ns from 'xx'
+            return;
+        }
+
+        const toConvert = declaration.importClause.namedBindings;
+        let usedAsNamespaceOrDefault = false;
+
+        FindAllReferences.Core.eachSymbolReferenceInFile(
+            toConvert.name,
+            checker,
+            sourceFile,
+            id => {
+                if (!isPropertyAccessExpression(id.parent)) {
+                    usedAsNamespaceOrDefault = true;
+                } else {
+                    const exportName = id.parent.name.text;
+                    if (
+                        checker.resolveName(
+                            exportName,
+                            id,
+                            SymbolFlags.All,
+                            /*excludeGlobals*/ true
+                        )
+                    ) {
+                        conflictingNames.set(exportName, true);
+                    }
+                    nodesToReplace.push(id.parent);
+                }
+            }
+        );
+
+        const exportNameToImportName = new Map<string, string>();
+        for (const propertyAccess of nodesToReplace) {
+            const exportName = propertyAccess.name.text;
+            let importName = exportNameToImportName.get(exportName);
+            if (importName === undefined) {
+                exportNameToImportName.set(
+                    exportName,
+                    (importName = conflictingNames.has(exportName)
+                        ? getUniqueName(exportName, sourceFile)
+                        : exportName)
+                );
+            }
+            changeTracker.replaceNode(
+                sourceFile,
+                propertyAccess,
+                factory.createIdentifier(importName)
+            );
+        }
+
+        const importSpecifiers: ImportSpecifier[] = [];
+        exportNameToImportName.forEach((name, propertyName) => {
+            importSpecifiers.push(
+                factory.createImportSpecifier(
+                    name === propertyName
+                        ? undefined
+                        : factory.createIdentifier(propertyName),
+                    factory.createIdentifier(name)
+                )
+            );
+        });
+
+        const importDecl = toConvert.parent.parent;
+        if (usedAsNamespaceOrDefault) {
+            // Need to leave the namespace import alone
+            changeTracker.insertNodeAfter(
+                sourceFile,
+                importDecl,
+                updateImport(
+                    importDecl,
+                    /*defaultImportName*/ undefined,
+                    importSpecifiers
+                )
+            );
+        } else {
+            changeTracker.replaceNode(
+                sourceFile,
+                importDecl,
+                updateImport(
+                    importDecl,
+                    usedAsNamespaceOrDefault
+                        ? factory.createIdentifier(toConvert.name.text)
+                        : undefined,
+                    importSpecifiers
+                )
+            );
+        }
+    }
+
+    function updateImport(
+        old: ImportDeclaration,
+        defaultImportName: Identifier | undefined,
+        elements: readonly ImportSpecifier[] | undefined
+    ): ImportDeclaration {
+        return factory.createImportDeclaration(
+            /*decorators*/ undefined,
+            /*modifiers*/ undefined,
+            factory.createImportClause(
+                /*isTypeOnly*/ false,
+                defaultImportName,
+                elements && elements.length
+                    ? factory.createNamedImports(elements)
+                    : undefined
+            ),
+            old.moduleSpecifier
+        );
     }
 }
