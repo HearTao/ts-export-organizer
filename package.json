@@ -9,6 +9,10 @@
     "test": "ts-node ./tests/index.ts --project ./tests/tsconfig.json",
     "prettier": "prettier -c --config ./prettier.config.js ./src/**/*.ts ./tests/**/*.ts --write"
   },
+  "files": [
+    "dist",
+    "src"
+  ],
   "dependencies": {
     "prettier": "^2.1.2",
     "ts-node": "^9.0.0",
