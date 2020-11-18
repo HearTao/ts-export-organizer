@@ -100,19 +100,18 @@ declare module 'typescript' {
                 options?: ChangeNodeOptions
             ): void;
 
+            public replaceNodeWithNodes(
+                sourceFile: SourceFile,
+                oldNode: Node,
+                newNodes: readonly Node[],
+                options?: ChangeNodeOptions
+            ): void;
             public deleteNodeRange(
                 sourceFile: SourceFile,
                 startNode: Node,
                 endNode: Node,
                 options?: ConfigurableStartEnd
             ): void;
-
-            public delete(
-                sourceFile: SourceFile,
-                node: Node | NodeArray<TypeParameterDeclaration>
-            ): void;
-
-            public finishDeleteDeclarations(): void;
 
             public insertNodeAtTopOfFile(
                 sourceFile: SourceFile,

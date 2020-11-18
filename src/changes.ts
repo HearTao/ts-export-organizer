@@ -45,16 +45,19 @@ export class ProxyChangesTracker implements textChanges.ChangeTracker {
         }
     }
 
-    delete(
+    replaceNodeWithNodes(
         sourceFile: SourceFile,
-        node: Node | NodeArray<TypeParameterDeclaration>
+        oldNode: Node,
+        newNodes: readonly Node[],
+        options?: textChanges.ChangeNodeOptions
     ): void {
-        this.changeTracker.delete(sourceFile, node);
-    }
-
-    finishDeleteDeclarations(): void {
         this.checkOverlap(() => {
-            this.changeTracker.finishDeleteDeclarations();
+            this.changeTracker.replaceNodeWithNodes(
+                sourceFile,
+                oldNode,
+                newNodes,
+                options
+            );
         });
     }
 

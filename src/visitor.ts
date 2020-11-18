@@ -7,10 +7,16 @@ import {
     resolveModuleName,
     SourceFile,
     Symbol,
+    SymbolFlags,
     textChanges
 } from 'typescript';
-import { cast } from './utils';
+import { cast, partition } from './utils';
 import { MixinHost } from './hosts';
+
+enum SymbolKind {
+    DefinitelyType = 'DefinitelyType',
+    MaybeValue = 'MaybeValue'
+}
 
 export function visit(
     sourceFile: SourceFile,
@@ -29,25 +35,67 @@ export function visit(
     });
 
     for (const [decl, exports] of declarationExportsMap.entries()) {
-        const newExportDeclaration = generateExportDeclaration(decl, exports);
-        changeTracker.replaceNode(sourceFile, decl, newExportDeclaration);
+        const newExportDeclarations = generateExportDeclaration(decl, exports);
+        changeTracker.replaceNodeWithNodes(
+            sourceFile,
+            decl,
+            newExportDeclarations
+        );
     }
 
     function generateExportDeclaration(
         exportDeclaration: ExportDeclaration,
         symbols: Symbol[]
     ) {
-        return factory.createExportDeclaration(
-            undefined,
-            undefined,
-            exportDeclaration.isTypeOnly,
-            factory.createNamedExports(
-                symbols.map(symbol =>
-                    factory.createExportSpecifier(undefined, symbol.name)
+        const { DefinitelyType, MaybeValue } = partition(symbols, symbol => {
+            if (
+                !(symbol.flags & SymbolFlags.Value) &&
+                symbol.flags & SymbolFlags.Type
+            ) {
+                return SymbolKind.DefinitelyType;
+            }
+            return SymbolKind.MaybeValue;
+        });
+
+        const result: ExportDeclaration[] = [];
+        if (MaybeValue?.length) {
+            result.push(
+                factory.createExportDeclaration(
+                    undefined,
+                    undefined,
+                    false,
+                    factory.createNamedExports(
+                        MaybeValue.map(symbol =>
+                            factory.createExportSpecifier(
+                                undefined,
+                                symbol.name
+                            )
+                        )
+                    ),
+                    exportDeclaration.moduleSpecifier
                 )
-            ),
-            exportDeclaration.moduleSpecifier
-        );
+            );
+        }
+        if (DefinitelyType?.length) {
+            result.push(
+                factory.createExportDeclaration(
+                    undefined,
+                    undefined,
+                    true,
+                    factory.createNamedExports(
+                        DefinitelyType.map(symbol =>
+                            factory.createExportSpecifier(
+                                undefined,
+                                symbol.name
+                            )
+                        )
+                    ),
+                    exportDeclaration.moduleSpecifier
+                )
+            );
+        }
+
+        return result;
     }
 
     function visitExportDeclaration(declaration: ExportDeclaration) {

@@ -36,3 +36,24 @@ export function cast<T extends Node, U extends T>(
     }
     return node;
 }
+
+export function partition<T, U extends keyof any>(
+    items: readonly T[],
+    cb: (v: T) => U
+): Partial<Record<U, T[]>> {
+    const result: Partial<Record<U, T[]>> = {};
+    items.forEach(item => {
+        const key = cb(item);
+        const group: T[] = result[key] ?? [];
+        group.push(item);
+        result[key] = group;
+    });
+    return result;
+}
+
+export function map<T, U>(v: T[] | null | undefined, cb: (v: T) => U): U[] {
+    if (!v) {
+        return [];
+    }
+    return v.map(cb);
+}
