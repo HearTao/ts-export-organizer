@@ -10,9 +10,11 @@ import {
     isImportDeclaration,
     isNamespaceImport,
     isPropertyAccessExpression,
+    isPropertyAccessOrQualifiedName,
     isStringLiteral,
     Program,
     PropertyAccessExpression,
+    QualifiedName,
     resolveModuleName,
     SourceFile,
     Symbol,
@@ -163,8 +165,10 @@ function generateExportDeclaration(
     }
 }
 
+type PropertyAccessOrQualifiedName = PropertyAccessExpression | QualifiedName;
+
 interface ImportDeclInfo {
-    referencesToRewrite: Map<Symbol, PropertyAccessExpression[]>;
+    referencesToRewrite: Map<Symbol, PropertyAccessOrQualifiedName[]>;
     symbolAliasMap: Map<Symbol, string>;
     notPureImport: boolean;
 }
@@ -200,14 +204,13 @@ function rewriteImport(
         }
 
         let notPureImport = false;
-        const accessReferences: PropertyAccessExpression[] = [];
-
+        const accessReferences: PropertyAccessOrQualifiedName[] = [];
         FindAllReferences.Core.eachSymbolReferenceInFile(
             declaration.importClause.namedBindings.name,
             checker,
             sourceFile,
             id => {
-                if (!isPropertyAccessExpression(id.parent)) {
+                if (!isPropertyAccessOrQualifiedName(id.parent)) {
                     notPureImport = true;
                 } else {
                     accessReferences.push(id.parent);
@@ -218,12 +221,12 @@ function rewriteImport(
         const symbolAliasMap = new Map<Symbol, string>();
         const referencesToRewrite = new Map<
             Symbol,
-            PropertyAccessExpression[]
+            PropertyAccessOrQualifiedName[]
         >();
 
-        accessReferences.forEach(propertyAccess => {
+        accessReferences.forEach(propertyAccessOrQualifiedName => {
             const symbolMaybeAlias = checker.getSymbolAtLocation(
-                propertyAccess
+                propertyAccessOrQualifiedName
             );
             if (!symbolMaybeAlias) {
                 return;
@@ -234,14 +237,14 @@ function rewriteImport(
                     : symbolMaybeAlias;
 
             const references = referencesToRewrite.get(symbol) || [];
-            references.push(propertyAccess);
+            references.push(propertyAccessOrQualifiedName);
             referencesToRewrite.set(symbol, references);
 
             if (
                 !symbolAliasMap.has(symbol) &&
                 checker.resolveName(
                     symbol.name,
-                    propertyAccess,
+                    propertyAccessOrQualifiedName,
                     SymbolFlags.All,
                     true
                 )
