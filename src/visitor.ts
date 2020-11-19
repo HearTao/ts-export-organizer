@@ -17,7 +17,8 @@ import {
     SourceFile,
     Symbol,
     SymbolFlags,
-    textChanges
+    textChanges,
+    TypeChecker
 } from 'typescript';
 import { cast, partition } from './utils';
 import { MixinHost } from './hosts';
@@ -27,23 +28,54 @@ enum SymbolKind {
     MaybeValue = 'MaybeValue'
 }
 
+export enum Features {
+    ExportRewrite,
+    ImportRewrite
+}
+
+const FullFeatures = new Set([Features.ExportRewrite, Features.ImportRewrite]);
+
 export function visit(
     sourceFile: SourceFile,
     program: Program,
     host: MixinHost,
+    changeTracker: textChanges.ChangeTracker,
+    features: Set<Features> = FullFeatures
+) {
+    const checker = program.getTypeChecker();
+
+    if (features.has(Features.ExportRewrite)) {
+        rewriteExport(sourceFile, program, checker, host, changeTracker);
+    }
+    if (features.has(Features.ImportRewrite)) {
+        rewriteImport(sourceFile, checker, changeTracker);
+    }
+}
+
+function partitionSymbolByTypeAndValue(symbols: Symbol[]) {
+    return partition(symbols, symbol => {
+        if (
+            !(symbol.flags & SymbolFlags.Value) &&
+            symbol.flags & SymbolFlags.Type
+        ) {
+            return SymbolKind.DefinitelyType;
+        }
+        return SymbolKind.MaybeValue;
+    });
+}
+
+function rewriteExport(
+    sourceFile: SourceFile,
+    program: Program,
+    checker: TypeChecker,
+    host: MixinHost,
     changeTracker: textChanges.ChangeTracker
 ) {
     const compilerOptions = program.getCompilerOptions();
-    const checker = program.getTypeChecker();
     const declarationExportsMap = new Map<ExportDeclaration, Symbol[]>();
-    const nodesToReplace: PropertyAccessExpression[] = [];
-    const conflictingNames = new Map<string, true>();
-
     sourceFile.statements.forEach(stmt => {
         if (isExportDeclaration(stmt)) {
             visitExportDeclaration(stmt);
-        } else if (isImportDeclaration(stmt)) {
-            visitImportDeclaration(stmt);
         }
     });
 
@@ -54,61 +86,6 @@ export function visit(
             decl,
             newExportDeclarations
         );
-    }
-
-    function generateExportDeclaration(
-        exportDeclaration: ExportDeclaration,
-        symbols: Symbol[]
-    ) {
-        const { DefinitelyType, MaybeValue } = partition(symbols, symbol => {
-            if (
-                !(symbol.flags & SymbolFlags.Value) &&
-                symbol.flags & SymbolFlags.Type
-            ) {
-                return SymbolKind.DefinitelyType;
-            }
-            return SymbolKind.MaybeValue;
-        });
-
-        const result: ExportDeclaration[] = [];
-        if (MaybeValue?.length) {
-            result.push(
-                factory.createExportDeclaration(
-                    undefined,
-                    undefined,
-                    false,
-                    factory.createNamedExports(
-                        MaybeValue.map(symbol =>
-                            factory.createExportSpecifier(
-                                undefined,
-                                symbol.name
-                            )
-                        )
-                    ),
-                    exportDeclaration.moduleSpecifier
-                )
-            );
-        }
-        if (DefinitelyType?.length) {
-            result.push(
-                factory.createExportDeclaration(
-                    undefined,
-                    undefined,
-                    true,
-                    factory.createNamedExports(
-                        DefinitelyType.map(symbol =>
-                            factory.createExportSpecifier(
-                                undefined,
-                                symbol.name
-                            )
-                        )
-                    ),
-                    exportDeclaration.moduleSpecifier
-                )
-            );
-        }
-
-        return result;
     }
 
     function visitExportDeclaration(declaration: ExportDeclaration) {
@@ -148,6 +125,69 @@ export function visit(
         const moduleExports = checker.getExportsOfModule(sourceFileSymbol);
         declarationExportsMap.set(declaration, moduleExports);
     }
+}
+
+function generateExportDeclaration(
+    exportDeclaration: ExportDeclaration,
+    symbols: Symbol[]
+) {
+    const { DefinitelyType, MaybeValue } = partitionSymbolByTypeAndValue(
+        symbols
+    );
+
+    const result: ExportDeclaration[] = [];
+    if (DefinitelyType?.length) {
+        result.push(createExportDeclarationFromSymbols(DefinitelyType, true));
+    }
+    if (MaybeValue?.length) {
+        result.push(createExportDeclarationFromSymbols(MaybeValue, false));
+    }
+
+    return result;
+
+    function createExportDeclarationFromSymbols(
+        symbols: Symbol[],
+        isTypeOnly: boolean
+    ) {
+        return factory.createExportDeclaration(
+            undefined,
+            undefined,
+            isTypeOnly,
+            factory.createNamedExports(
+                symbols.map(symbol =>
+                    factory.createExportSpecifier(undefined, symbol.name)
+                )
+            ),
+            exportDeclaration.moduleSpecifier
+        );
+    }
+}
+
+interface ImportDeclInfo {
+    referencesToRewrite: Map<Symbol, PropertyAccessExpression[]>;
+    symbolAliasMap: Map<Symbol, string>;
+    notPureImport: boolean;
+}
+
+function rewriteImport(
+    sourceFile: SourceFile,
+    checker: TypeChecker,
+    changeTracker: textChanges.ChangeTracker
+) {
+    const declarationImportsMap = new Map<ImportDeclaration, ImportDeclInfo>();
+
+    sourceFile.statements.forEach(stmt => {
+        if (isImportDeclaration(stmt)) {
+            visitImportDeclaration(stmt);
+        }
+    });
+
+    for (const [decl, info] of declarationImportsMap.entries()) {
+        rewriteReference(info, changeTracker, sourceFile);
+
+        const imports = generateImportDeclaration(decl, info);
+        changeTracker.replaceNodeWithNodes(sourceFile, decl, imports);
+    }
 
     function visitImportDeclaration(declaration: ImportDeclaration) {
         if (
@@ -159,107 +199,134 @@ export function visit(
             return;
         }
 
-        const toConvert = declaration.importClause.namedBindings;
-        let usedAsNamespaceOrDefault = false;
+        let notPureImport = false;
+        const accessReferences: PropertyAccessExpression[] = [];
 
         FindAllReferences.Core.eachSymbolReferenceInFile(
-            toConvert.name,
+            declaration.importClause.namedBindings.name,
             checker,
             sourceFile,
             id => {
                 if (!isPropertyAccessExpression(id.parent)) {
-                    usedAsNamespaceOrDefault = true;
+                    notPureImport = true;
                 } else {
-                    const exportName = id.parent.name.text;
-                    if (
-                        checker.resolveName(
-                            exportName,
-                            id,
-                            SymbolFlags.All,
-                            /*excludeGlobals*/ true
-                        )
-                    ) {
-                        conflictingNames.set(exportName, true);
-                    }
-                    nodesToReplace.push(id.parent);
+                    accessReferences.push(id.parent);
                 }
             }
         );
 
-        const exportNameToImportName = new Map<string, string>();
-        for (const propertyAccess of nodesToReplace) {
-            const exportName = propertyAccess.name.text;
-            let importName = exportNameToImportName.get(exportName);
-            if (importName === undefined) {
-                exportNameToImportName.set(
-                    exportName,
-                    (importName = conflictingNames.has(exportName)
-                        ? getUniqueName(exportName, sourceFile)
-                        : exportName)
+        const symbolAliasMap = new Map<Symbol, string>();
+        const referencesToRewrite = new Map<
+            Symbol,
+            PropertyAccessExpression[]
+        >();
+
+        accessReferences.forEach(propertyAccess => {
+            const symbolMaybeAlias = checker.getSymbolAtLocation(
+                propertyAccess
+            );
+            if (!symbolMaybeAlias) {
+                return;
+            }
+            const symbol =
+                symbolMaybeAlias.flags & SymbolFlags.Alias
+                    ? checker.getAliasedSymbol(symbolMaybeAlias)
+                    : symbolMaybeAlias;
+
+            const references = referencesToRewrite.get(symbol) || [];
+            references.push(propertyAccess);
+            referencesToRewrite.set(symbol, references);
+
+            if (
+                !symbolAliasMap.has(symbol) &&
+                checker.resolveName(
+                    symbol.name,
+                    propertyAccess,
+                    SymbolFlags.All,
+                    true
+                )
+            ) {
+                symbolAliasMap.set(
+                    symbol,
+                    getUniqueName(symbol.name, sourceFile)
                 );
             }
-            changeTracker.replaceNode(
-                sourceFile,
-                propertyAccess,
-                factory.createIdentifier(importName)
-            );
-        }
-
-        const importSpecifiers: ImportSpecifier[] = [];
-        exportNameToImportName.forEach((name, propertyName) => {
-            importSpecifiers.push(
-                factory.createImportSpecifier(
-                    name === propertyName
-                        ? undefined
-                        : factory.createIdentifier(propertyName),
-                    factory.createIdentifier(name)
-                )
-            );
         });
 
-        const importDecl = toConvert.parent.parent;
-        if (usedAsNamespaceOrDefault) {
-            // Need to leave the namespace import alone
-            changeTracker.insertNodeAfter(
-                sourceFile,
-                importDecl,
-                updateImport(
-                    importDecl,
-                    /*defaultImportName*/ undefined,
-                    importSpecifiers
-                )
-            );
-        } else {
+        declarationImportsMap.set(declaration, {
+            referencesToRewrite,
+            notPureImport,
+            symbolAliasMap
+        });
+    }
+}
+
+function rewriteReference(
+    info: ImportDeclInfo,
+    changeTracker: textChanges.ChangeTracker,
+    sourceFile: SourceFile
+) {
+    const { referencesToRewrite, symbolAliasMap } = info;
+    for (const [symbol, references] of referencesToRewrite.entries()) {
+        const symbolName = symbolAliasMap.get(symbol) ?? symbol.name;
+        references.forEach(reference => {
             changeTracker.replaceNode(
                 sourceFile,
-                importDecl,
-                updateImport(
-                    importDecl,
-                    usedAsNamespaceOrDefault
-                        ? factory.createIdentifier(toConvert.name.text)
-                        : undefined,
-                    importSpecifiers
-                )
+                reference,
+                factory.createIdentifier(symbolName)
             );
-        }
+        });
+    }
+}
+
+function generateImportDeclaration(
+    declaration: ImportDeclaration,
+    info: ImportDeclInfo
+): ImportDeclaration[] {
+    const { referencesToRewrite, notPureImport, symbolAliasMap } = info;
+    const { DefinitelyType, MaybeValue } = partitionSymbolByTypeAndValue(
+        Array.from(referencesToRewrite.keys())
+    );
+
+    const result: ImportDeclaration[] = [];
+
+    if (DefinitelyType?.length) {
+        result.push(createImportDeclarationFromSymbols(DefinitelyType, true));
+    }
+    if (MaybeValue?.length) {
+        result.push(createImportDeclarationFromSymbols(MaybeValue, false));
+    }
+    if (notPureImport) {
+        result.push(declaration);
     }
 
-    function updateImport(
-        old: ImportDeclaration,
-        defaultImportName: Identifier | undefined,
-        elements: readonly ImportSpecifier[] | undefined
-    ): ImportDeclaration {
+    return result;
+
+    function createImportDeclarationFromSymbols(
+        symbols: Symbol[],
+        isTypeOnly: boolean
+    ) {
         return factory.createImportDeclaration(
-            /*decorators*/ undefined,
-            /*modifiers*/ undefined,
+            undefined,
+            undefined,
             factory.createImportClause(
-                /*isTypeOnly*/ false,
-                defaultImportName,
-                elements && elements.length
-                    ? factory.createNamedImports(elements)
-                    : undefined
+                isTypeOnly,
+                undefined,
+                factory.createNamedImports(
+                    symbols.map(x => {
+                        const name = symbolAliasMap.get(x) ?? x.name;
+                        const propertyName = symbolAliasMap.has(x)
+                            ? factory.createIdentifier(x.name)
+                            : undefined;
+
+                        return factory.createImportSpecifier(
+                            propertyName,
+                            factory.createIdentifier(name)
+                        );
+                    })
+                )
             ),
-            old.moduleSpecifier
+            declaration.moduleSpecifier
         );
     }
 }

@@ -4,4 +4,5 @@ import { ext } from 'ext_modules';
 import * as ns from './libs';
 
 declare const t: T;
-console.log(a, bb, c, ext, baz, ns.a);
+declare const ttt: ns.TTT;
+console.log(a, bb, c, ext, baz, ns.dd);
